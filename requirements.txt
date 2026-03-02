@@ -1,0 +1,6 @@
+PyMuPDF
+python-docx
+pymupdf4llm
+pandas
+rich
+pyarrow
