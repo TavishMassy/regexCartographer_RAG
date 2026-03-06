@@ -1,94 +1,94 @@
 import os
 import fitz
 import docx
-import hashlib
+import shutil
 import pymupdf4llm  
 import pandas as pd
 from pathlib import Path
 from rich.progress import track
 
-class PolicyCartographer:
+class Cartographer:
     def __init__(self) -> None:
         self.supported = {'.pdf', '.docx', '.txt'}
 
-    def get_hash(self, file_path) -> str:
-        """Creates a unique ID based on file CONTENT."""
-        hasher = hashlib.md5()
-        with open(file_path, 'rb') as f:
-            buf = f.read(65536)
-            while len(buf) > 0:
-                hasher.update(buf)
-                buf = f.read(65536)
-        return hasher.hexdigest()
-
-    def _extract_pdf_chunks(self, file_path, file_id) -> list:
-        """PDFs get 'shredded' page-by-page for high-precision RAG."""
+    def _extract_pdf_chunks(self, file_path, link) -> list:
+        """PDFs get 'shredded' page-by-page. Metadata appended to content."""
+        source_name = Path(file_path).name
         try:
-            # page_chunks=True allows us to keep the Page Number for citations
             pages = pymupdf4llm.to_markdown(file_path, page_chunks=True)
             chunks = []
             for page in pages:
                 page_num = page.get("metadata", {}).get("page", 0) + 1
+                text = page.get("text", "").strip()
+                
+                # Append metadata directly to the text block
+                content_with_meta = f"{text}\n\n--- Metadata ---\nPage: {page_num}\nSource: {source_name}\nLink: {link}"
+                
                 chunks.append({
-                    "chunk_id": f"{file_id}_p{page_num}",
-                    "content": page.get("text", "").strip(),
-                    "metadata": {"page": page_num, "source": Path(file_path).name}
+                    "source": source_name,
+                    "content": content_with_meta
                 })
             return chunks
         except Exception:
             # Fallback to standard PyMuPDF if markdown fails
             doc = fitz.open(file_path)
             return [{
-                "chunk_id": f"{file_id}_p{i+1}",
-                "content": page.get_text(),
-                "metadata": {"page": i+1, "source": Path(file_path).name}
+                "source": source_name,
+                "content": f"{page.get_text().strip()}\n\n--- Metadata ---\nPage: {i+1}\nSource: {source_name}\nLink: {link}"
             } for i, page in enumerate(doc)]
 
-    def _extract_docx_chunks(self, file_path, file_id) -> list:
-        """DOCX files are split by paragraphs to maintain context."""
+    def _extract_docx_chunks(self, file_path, link) -> list:
+        """DOCX files are split by paragraphs."""
+        source_name = Path(file_path).name
         doc = docx.Document(file_path)
         chunks = []
-        # Grouping every 5 paragraphs to create a 'chunk'
         paragraphs = [p.text for p in doc.paragraphs if len(p.text.strip()) > 20]
+        
         for i in range(0, len(paragraphs), 5):
             combined_text = "\n\n".join(paragraphs[i:i+5])
+            content_with_meta = f"{combined_text}\n\n--- Metadata ---\nSource: {source_name}\nLink: {link}"
+            
             chunks.append({
-                "chunk_id": f"{file_id}_c{i//5}",
-                "content": combined_text,
-                "metadata": {"page": "N/A (Docx)", "source": Path(file_path).name}
+                "source": source_name,
+                "content": content_with_meta
             })
         return chunks
 
-    def _extract_txt_chunks(self, file_path, file_id) -> list:
-        """TXT files are split by character count (approx 1000 chars)."""
+    def _extract_txt_chunks(self, file_path, link) -> list:
+        """TXT files are split by character count."""
+        source_name = Path(file_path).name
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             text = f.read()
-            # Simple chunking for flat text
             size = 1000
             chunks = [text[i:i+size] for i in range(0, len(text), size)]
+            
             return [{
-                "chunk_id": f"{file_id}_t{i}",
-                "content": c,
-                "metadata": {"page": "N/A (Txt)", "source": Path(file_path).name}
-            } for i, c in enumerate(chunks)]
+                "source": source_name,
+                "content": f"{c}\n\n--- Metadata ---\nSource: {source_name}\nLink: {link}"
+            } for c in chunks]
 
-    def run(self, source_folder, output_file) -> pd.DataFrame:
+    def run(self, source_folder, output_file, quarantine_folder) -> pd.DataFrame:
         all_data = []
         folder = Path(source_folder)
-        files = [f for f in folder.iterdir() if f.suffix.lower() in self.supported]
+        files = [(f, input(f'Link for {f.name}: ')) for f in folder.iterdir() if f.suffix.lower() in self.supported]
         
         print(f"⚔️  The Arsenal: Shredding {len(files)} policy documents...")
 
-        for f in track(files, description="[cyan]Processing..."):
-            file_id = self.get_hash(f)
+        for f, link in track(files, description="[cyan]Processing..."):
             ext = f.suffix.lower()
             
             if ext == '.pdf':
-                chunks = self._extract_pdf_chunks(f, file_id)
+                chunks = self._extract_pdf_chunks(f, link)
             elif ext == '.docx':
-                chunks = self._extract_docx_chunks(f, file_id)
-            else: # .txt
-                chunks = self._extract_txt_chunks(f, file_id)
+                chunks = self._extract_docx_chunks(f, link)
+            elif ext == '.txt':
+                chunks = self._extract_txt_chunks(f, link)
+            else:
+                # Fixed quarantine copy logic
+                q_path = Path(quarantine_folder)
+                q_path.mkdir(parents=True, exist_ok=True)
+                shutil.copy(f, q_path / f.name)
+                continue # Skip extending all_data for quarantined files
             
             all_data.extend(chunks)
 
@@ -99,5 +99,6 @@ class PolicyCartographer:
         return df
 
 if __name__ == "__main__":
-    cartographer = PolicyCartographer()
-    cartographer.run("data/files", "data/result/data.parquet")
+    cartographer = Cartographer()
+    # Note: Corrected 'quarentine' to 'quarantine' spelling in the folder name below
+    cartographer.run("data/files", "data/result/data.parquet", "data/quarantine")

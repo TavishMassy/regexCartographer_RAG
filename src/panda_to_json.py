@@ -1,7 +1,7 @@
-import pandas as pd
 import json
-from rich.console import Console
+import pandas as pd
 from rich.table import Table
+from rich.console import Console
 
 console = Console()
 
@@ -22,15 +22,12 @@ def export_parquet_to_json(input_file, output_file):
         
         # Display a preview of the structured data
         table = Table(title="Vault Data Preview (Top 3 Chunks)")
-        table.add_column("Page", style="cyan")
         table.add_column("Content Snippet", style="green")
 
         for row in data_list[:3]:
             # Extract page from metadata safely
-            metadata = row.get('metadata', {})
-            page = metadata.get('page', 'N/A') if isinstance(metadata, dict) else "N/A"
             content = row.get('content', '')[:75].replace('\n', ' ') + "..."
-            table.add_row(str(page), content)
+            table.add_row(content)
 
         console.print(table)
         
